@@ -218,146 +218,86 @@ class EventLogViewer:
             self.tree.insert('', tk.END, values=(date_str, startup_str, shutdown_str, work_hours_str))
     
     def export_to_csv(self):
-        """Export the current results to CSV files based on user selection:
-        1. Displayed data – values exactly as shown on the interface (with lunch break deducted).
-        2. Data with times rounded to the nearest 30 minutes.
-        3. Processed data with times converted to decimal numbers.
-        4. All above.
+        """Export current results to a CSV file with 6 columns:
+        1. Original Date, First Startup, Last Shutdown, and Work Hours (with lunch break deducted)
+        2. Work Hours (Rounded to the nearest 30 minutes as a time)
+        3. Work Hours (Rounded to a decimal number)
         """
         if self.summary_df.empty:
             return
 
         base_path = f"pc_events_{self.year_var.get()}_{self.month_var.get()}"
 
-        # Create selection popup
-        popup = tk.Toplevel(self.root)
-        popup.title("Select Export File Type")
-        popup.geometry("300x200")
-        popup.transient(self.root)
-        popup.grab_set()
+        # Helper functions for formatting
+        def format_time(time_val):
+            return time_val.strftime('%H:%M:%S') if pd.notna(time_val) else "N/A"
 
-        ttk.Label(popup, text="Choose file type to export:").pack(pady=10)
-        export_option = tk.StringVar(value="All")
-        options = [("Original", "Original"),
-                   ("Rounded", "Rounded"),
-                   ("Processed", "Processed"),
-                   ("All", "All")]
-        for text, mode in options:
-            ttk.Radiobutton(popup, text=text, variable=export_option, value=mode).pack(anchor=tk.W, padx=20)
+        def format_date(d):
+            return d.strftime('%Y-%m-%d (%A)') if pd.notna(d) else "N/A"
 
-        def on_ok():
-            popup.destroy()
-            selection = export_option.get()
+        def format_work_hours(td):
+            # Deduct one hour for lunch break; ensure non-negative duration.
+            if pd.notna(td):
+                adjusted = td - timedelta(hours=1)
+                if adjusted.total_seconds() < 0:
+                    adjusted = timedelta(seconds=0)
+                total_seconds = int(adjusted.total_seconds())
+                hours, remainder = divmod(total_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                return "N/A"
 
-            # Helper functions to format values
-            def format_time(time_val):
-                return time_val.strftime('%H:%M:%S') if pd.notna(time_val) else "N/A"
+        # Rounding logic for work hours (rounded to nearest 30 minutes)
+        def round_timedelta(td):
+            if pd.isna(td):
+                return td
+            total_minutes = td.total_seconds() / 60
+            lower = (total_minutes // 30) * 30
+            if (total_minutes - lower) < 20:
+                rounded_minutes = lower
+            else:
+                rounded_minutes = lower + 30
+            return timedelta(minutes=rounded_minutes)
 
-            def format_work_hours(td):
-                if pd.notna(td):
-                    adjusted = td - timedelta(hours=1)
-                    if adjusted.total_seconds() < 0:
-                        adjusted = timedelta(seconds=0)
-                    total_seconds = int(adjusted.total_seconds())
-                    hours, remainder = divmod(total_seconds, 3600)
-                    minutes, seconds = divmod(remainder, 60)
-                    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
-                    return "N/A"
+        # Rounding logic to convert work hours to a decimal number
+        def timedelta_to_decimal(td):
+            if pd.isna(td):
+                    return None
+            adjusted = td - timedelta(hours=1)
+            if adjusted.total_seconds() < 0:
+                    adjusted = timedelta(seconds=0)
+            hours_decimal = adjusted.total_seconds() / 3600
+            whole_hours = int(hours_decimal)
+            minutes = (hours_decimal - whole_hours) * 60
+            if minutes < 25:
+                return whole_hours
+            else:
+                return round(hours_decimal * 2) / 2
 
-            def format_date(d):
-                return d.strftime('%Y-%m-%d (%A)') if pd.notna(d) else "N/A"
+        # Create a copy of the summary for export
+        df_export = self.summary_df.copy()
 
-            def export_displayed():
-                df_displayed = self.summary_df.copy()
-                df_displayed['Date'] = df_displayed['Date'].apply(format_date)
-                df_displayed['First Startup'] = df_displayed['First Startup'].apply(format_time)
-                df_displayed['Last Shutdown'] = df_displayed['Last Shutdown'].apply(format_time)
-                df_displayed['Work Hours'] = df_displayed['Work Hours'].apply(format_work_hours)
-                df_displayed.to_csv(f"{base_path}_original.csv", index=False)
+        # Format the original columns for export
+        df_export['Date'] = df_export['Date'].apply(format_date)
+        df_export['First Startup'] = df_export['First Startup'].apply(format_time)
+        df_export['Last Shutdown'] = df_export['Last Shutdown'].apply(format_time)
+        df_export['Work Hours'] = df_export['Work Hours'].apply(format_work_hours)
 
-            def export_rounded():
-                df_rounded = self.summary_df.copy()
+        # Create new columns for the rounded values
+        df_export['Work Hours (Rounded)'] = self.summary_df['Work Hours'].apply(
+            lambda td: format_work_hours(round_timedelta(td)) if pd.notna(td) else "N/A"
+        )
+        df_export['Work Hours (Decimal)'] = self.summary_df['Work Hours'].apply(
+            lambda td: timedelta_to_decimal(td) if pd.notna(td) else None
+        )
 
-                def round_time(time_val):
-                    if pd.isna(time_val):
-                        return time_val
-                    dt = datetime.combine(datetime.today(), time_val)
-                    total_minutes = dt.hour * 60 + dt.minute
-                    rounded_minutes = int(round(total_minutes / 30) * 30)
-                    new_hour = rounded_minutes // 60
-                    new_minute = rounded_minutes % 60
-                    return dt.replace(hour=new_hour, minute=new_minute, second=0, microsecond=0).time()
+        # Arrange columns in the desired order
+        df_export = df_export[['Date', 'First Startup', 'Last Shutdown',
+                               'Work Hours', 'Work Hours (Rounded)', 'Work Hours (Decimal)']]
 
-                def round_timedelta(td):
-                    if pd.isna(td):
-                        return td
-                    total_minutes = td.total_seconds() / 60
-                    rounded_minutes = int(round(total_minutes / 30) * 30)
-                    return timedelta(minutes=rounded_minutes)
-
-                df_rounded['First Startup'] = df_rounded['First Startup'].apply(round_time)
-                df_rounded['Last Shutdown'] = df_rounded['Last Shutdown'].apply(round_time)
-                df_rounded['Work Hours'] = df_rounded['Work Hours'].apply(round_timedelta)
-
-                df_rounded_display = df_rounded.copy()
-                df_rounded_display['Date'] = df_rounded_display['Date'].apply(format_date)
-                df_rounded_display['First Startup'] = df_rounded_display['First Startup'].apply(format_time)
-                df_rounded_display['Last Shutdown'] = df_rounded_display['Last Shutdown'].apply(format_time)
-                df_rounded_display['Work Hours'] = df_rounded_display['Work Hours'].apply(format_work_hours)
-                df_rounded_display.to_csv(f"{base_path}_rounded.csv", index=False)
-
-            def export_processed():
-                df_processed = self.summary_df.copy()
-
-                def time_to_decimal(time_val):
-                    if pd.isna(time_val):
-                        return None
-                    hours_decimal = time_val.hour + time_val.minute/60 + time_val.second/3600
-                    # If minutes are less than 25, round down to the hour
-                    if time_val.minute < 25:
-                        return time_val.hour
-                    else:
-                        return round(hours_decimal * 2) / 2
-
-                def timedelta_to_decimal(td):
-                    if pd.isna(td):
-                        return None
-                    adjusted = td - timedelta(hours=1)
-                    if adjusted.total_seconds() < 0:
-                        adjusted = timedelta(seconds=0)
-                    hours_decimal = adjusted.total_seconds() / 3600
-                    whole_hours = int(hours_decimal)
-                    minutes = (hours_decimal - whole_hours) * 60
-                    # If minutes are less than 25, round down to the whole hour
-                    if minutes < 25:
-                        return whole_hours
-                    else:
-                        return round(hours_decimal * 2) / 2
-
-                df_processed['Date'] = df_processed['Date'].apply(format_date)
-                df_processed['First Startup'] = df_processed['First Startup'].apply(time_to_decimal)
-                df_processed['Last Shutdown'] = df_processed['Last Shutdown'].apply(time_to_decimal)
-                df_processed['Work Hours'] = df_processed['Work Hours'].apply(timedelta_to_decimal)
-                df_processed.to_csv(f"{base_path}_processed.csv", index=False)
-
-            # Export files based on selection
-            if selection == "Original":
-                export_displayed()
-            elif selection == "Rounded":
-                export_rounded()
-            elif selection == "Processed":
-                export_processed()
-            elif selection == "All":
-                export_displayed()
-                export_rounded()
-                export_processed()
-
-            messagebox.showinfo("Export Complete",
-                                f"File(s) exported with base name:\n{base_path}")
-
-        ttk.Button(popup, text="OK", command=on_ok).pack(pady=20)
-        self.root.wait_window(popup)
+        df_export.to_csv(f"{base_path}.csv", index=False)
+        messagebox.showinfo("Export Complete", f"File exported: {base_path}.csv")
     
     @staticmethod
     def get_system_events_for_month(year, month):
